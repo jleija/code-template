@@ -1,9 +1,10 @@
 local template = {}
 
 template.indentation_depth = 0
-template.indent_spaces = ".."
+template.indent_spaces = "  "
 
-local function indent()
+local indent_functions = {}
+function indent_functions.indent()
     local indents = {}
     for i=1, template.indentation_depth do
         table.insert(indents, template.indent_spaces)
@@ -11,44 +12,34 @@ local function indent()
     return table.concat(indents, "")
 end
 
-local function inc_indent()
-    template.indentation_depth = template.indentation_depth + 1
+function indent_functions.inc_indent(indents)
+    template.indentation_depth = template.indentation_depth + #indents
     return ""
 end
 
-local function dec_indent()
-    template.indentation_depth = template.indentation_depth - 1
+function indent_functions.dec_indent(indents)
+    template.indentation_depth = template.indentation_depth - #indents
     return ""
 end
 
+function template.render(data, args)
+  local return_str = ""
+  local function string_cat(x)
+      return_str = return_str .. x
+  end
 
-function template.escape(data)
-  return tostring(data or ''):gsub("[\">/<'&]", {
-    ["&"] = "&amp;",
-    ["<"] = "&lt;",
-    [">"] = "&gt;",
-    ['"'] = "&quot;",
-    ["'"] = "&#39;",
-    ["/"] = "&#47;"
-  })
-end
-
-function template.print(data, args, callback)
-  local callback = callback or print
   local function exec(data)
     if type(data) == "function" then
       local args = args or {}
-      args.inc_indent = inc_indent
-      args.dec_indent = dec_indent
-      args.indent = indent
       setmetatable(args, { __index = _G })
       setfenv(data, args)
       data(exec)
     else
-      callback(tostring(data or ''))
+      string_cat(tostring(data or ''))
     end
   end
   exec(data)
+  return return_str
 end
 
 function magiclines(s)
@@ -56,55 +47,42 @@ function magiclines(s)
     return s:gmatch("(.-)\n")
 end
 
-function template.parse(data, minify)
+local function code_substitution(data)
+    return data:
+        gsub("[][]=[][]", ']=]_"%1"_[=['):
+        gsub("<%%", "]=]_("):
+        gsub("%%>", ")_[=[\n"):
+        gsub("[ ]*<%?", "]=] "):
+        gsub("[ ]*%?>[ ]*\n", " _[=[")
+end
+
+local function code_indentation(data)
   local new_data = {}
   for line in magiclines(data) do
     local new_line = 
       line:
-        gsub("[][]=[][]", ']=]_"%1"_[=[\n'):
-        gsub("<%%=", "]=]_("):
-        gsub("<%%", "]=]__("):
-        gsub("%%>", ")_[=[\n"):
-        gsub("<%?", "]=] "):
-        gsub("%?>", " _[=[\n"): 
-        gsub("%%%->", "]=]__(inc_indent())_[=[\n"):
-        gsub("%%<%-", "]=]__(dec_indent())_[=[\n"):
---        gsub("^[ ]*", "]=]__(indent())_[=[\n")
-        gsub("^[ ]*(%S+)", "]=]__(indent())_[=[\n%1")
+        gsub("^%s+$", ""):
+        gsub("^[ ]*%|%-(>+)[ ]*$", "]=]_(inc_indent('%1'))_[=["):
+        gsub("^[ ]*%|%-(>+)(.*)$", "]=]_(inc_indent('%1'))_(indent())_[=[\n%2"):
+        gsub("%|%-(>+)[ ]*$", "<->]=]_(inc_indent('%1'))_[=[\n"):
+        gsub("^[ ]*(<+)%-%|[ ]*$", "]=]_(dec_indent('%1'))_[=["):
+        gsub("^[ ]*(.*)(<+)%-%|[ ]*$", "]=]_(dec_indent('%2'))_(indent())_[=[\n%1<->"):
+        gsub("^[ ]*(<+)%-%|", "]=]_(dec_indent('%1'))_(indent())_[=[<->"):
+        gsub("^[ ]+(.+)$", "]=]_(indent())_[=[%1"):
+        gsub("%s*<%->%s*", "")
     table.insert(new_data, new_line)
   end
-  local replaced_data = table.concat(new_data, "\n")
+  return table.concat(new_data, "\n")
+end
 
+function template.parse(data, operation)
   local str = 
     "return function(_)" .. 
-      "function __(...)" ..
-        "_(require('template').escape(...))" ..
-      "end " ..
-      "_[=[" ..
-      replaced_data
---      data:
---        gsub("[][]=[][]", ']=]_"%1"_[=['):
---        gsub("<%%=", "]=]_("):
---        gsub("<%%", "]=]__("):
---        gsub("%%>", ")_[=["):
---        gsub("<%?", "]=] "):
---        gsub("%?>", " _[=["): 
---        gsub("[ ]*%%%->[ ]*\n", "]=]__(inc_indent())_[=[\n"):
---        gsub("[ ]*%%<%-[ ]*\n", "]=]__(dec_indent())_[=[\n"):
---        gsub("^[ ]*", "]=]__(indent())_[=["):
---        gsub("\n[ ]*(%S+)", "\n]=]__(indent())_[=[%1")
-        ..
-      "]=] " ..
+      "_[=[" ..  operation(data) ..  "]=] " ..
     "end"
-  if minify then
-    str = str:
-      gsub("^[ %s]*", "]=]__(indent())_[=["):
-      gsub("[ %s]*$", ""):
-      gsub("%s+", " ")
-  end
-  print("----------------------------")
-  print(str)
-  print("----------------------------")
+--  print("----------------------------")
+--  print(str)
+--  print("----------------------------")
   return str
 end
 
@@ -112,4 +90,11 @@ function template.compile(...)
   return loadstring(template.parse(...))()
 end
 
-return template
+local function apply_template(string_template, data)
+    local code_template_fn = template.compile(string_template, code_substitution)
+    local templated_code = template.render(code_template_fn, data)
+    local indent_template_fn = template.compile(templated_code, code_indentation)
+    return template.render(indent_template_fn, indent_functions)
+end
+
+return apply_template
