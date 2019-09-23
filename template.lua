@@ -4,7 +4,7 @@ local function new_template(config)
 
     config = config or {}
 
-    local indentation_depth = config.initial_indentation_depth or 0
+    config.initial_indentation_depth = config.initial_indentation_depth or 0
     local indent_spaces = config.indent or "  "
 
     local indent_functions = {}
@@ -32,7 +32,22 @@ local function new_template(config)
         return ""
     end
 
-    function render(data, args)
+    local function parse(data, operation)
+      local str = 
+        "return function(_)" .. 
+          "_[=[" ..  operation(data) ..  "]=] " ..
+        "end"
+      print("----------------------------")
+      print(str)
+      print("----------------------------")
+      return str
+    end
+
+    local function compile(...)
+      return loadstring(parse(...))()
+    end
+
+    local function render(data, args)
       local return_str = ""
       local function string_cat(x)
           return_str = return_str .. x
@@ -52,7 +67,7 @@ local function new_template(config)
       return return_str
     end
 
-    function magiclines(s)
+    local function each_line(s)
         if s:sub(-1)~="\n" then s=s.."\n" end
         return s:gmatch("(.-)\n")
     end
@@ -61,43 +76,100 @@ local function new_template(config)
         return data:
             gsub("[][]=[][]", ']=]_"%1"_[=['):
             gsub("<%%", "]=]_("):
-            gsub("%%>", ")_[=[\n"):
+            gsub("%%>", ")_[=["):
+            gsub("<%[%?", "<@\n]=] "):
+--            gsub("%s*<%]%?", "\n]=]\nHERE\n"):
+            gsub("%s*<%?([^%?]*)%?%]>", "\n]=] %1 _[=[\n@>"):
+--            gsub("%?%|>", " _[=["):
             gsub("<%?", "]=] "):
-            gsub("%?>", " _[=[")
+            gsub("%?>", " _[=["):
+            gsub("<%|", "<|\n]=]_("):
+            gsub("%|>", ")_[=[\n\n|>")
+
+--            gsub("[][]=[][]", ']=]_"%1"_[=['):
+--            gsub("<%%", "]=]_("):
+--            gsub("%%>", ")_[=[\n"):
+--            gsub("<%?", "]=] "):
+--            gsub("%?>", " _[=[")
     end
+
+    local function make_spaces(count)
+        return string.rep(" ", count)
+    end
+
+    local function reindent(line, level)
+        if level.spaces_to_remove then
+            local shortened_line = line:gsub("^" .. level.spaces_to_remove, "")
+            return shortened_line
+        end
+        if level.spaces_to_add then
+            return level.spaces_to_add .. line
+        end
+        return line
+    end
+
+    local level = {
+        spaces_to_add = false,
+        spaces_to_remove = false,
+        depth = 0,
+        offset = false
+    }
 
     local function code_indentation(data)
-      local new_data = {}
-      for line in magiclines(data) do
-        local new_line = 
-          line:
-            gsub("^%s+$", ""):
-            gsub("^[ ]*%|%-(>+)[ ]*$", "]=]_(inc_indent('%1'))_[=["):
-            gsub("^[ ]*%|%-(>+)(.*)$", "]=]_(inc_indent('%1'))_(indent())_[=[\n%2"):
-            gsub("%|%-(>+)[ ]*$", "<->]=]_(inc_indent('%1'))_[=[\n"):
-            gsub("^[ ]*(<+)%-%|[ ]*$", "]=]_(dec_indent('%1'))_[=["):
-            gsub("^[ ]*([^<]*)(<+)%-%|[ ]*$", "]=]_(dec_indent('%2'))_(indent())_[=[\n%1<->"):
-            gsub("^[ ]*(<+)%-%|", "]=]_(dec_indent('%1'))_(indent())_[=[<->"):
-            gsub("^[ ]+(.+)$", "]=]_(indent())_[=[%1"):
-            gsub("%s*<%->%s*", "")
-        table.insert(new_data, new_line)
-      end
-      return table.concat(new_data, "\n")
-    end
+        local indented_lines = {}
 
-    function parse(data, operation)
-      local str = 
-        "return function(_)" .. 
-          "_[=[" ..  operation(data) ..  "]=] " ..
-        "end"
---      print("----------------------------")
---      print(str)
---      print("----------------------------")
-      return str
-    end
+        for line in each_line(data) do
+            print("line:[" .. line .. "] offset: " .. (level.offset or "NA"))
+            local indentation_spaces = line:match("^(%s*)<%|") 
+--                                        or line:match("^(%s*)<@")
+            if indentation_spaces then
+                local new_level = {
+                    depth = #indentation_spaces - (level.offset or 0),
+                    spaces_to_add = false,
+                    spaces_to_remove = false,
+                    offset = false,
+                    prev = level
+                }
+                level = new_level
+            elseif line:match("%|>") then
+                level = level.prev
+            elseif line:match("^(%s*)<@") then
+                local indentation_spaces = line:match("^(%s*)<@") 
+                local new_level = {
+                    depth = #indentation_spaces - (level.offset or 0),
+--                    depth = #indentation_spaces,
+                    offset = false,
+                    spaces_to_add = false,
+                    spaces_to_remove = false,
+                    prev = level
+                }
+                level = new_level
+            elseif line:match("@>") then
+                level = level.prev
+            else
+                if not level.spaces_to_add and not level.spaces_to_remove then
+                    local spaces = line:match("^(%s*)(.*)$")
+                    print("spaces: [" .. spaces .. "]")
+                    if spaces and #spaces > level.depth then
+                        level.offset = #spaces - level.depth
+                        level.spaces_to_remove = make_spaces(level.offset)
+                    elseif spaces and #spaces < level.depth then
+                        level.offset = level.depth - #spaces
+                        level.spaces_to_add = make_spaces(level.offset)
+                    end
+                end
+                table.insert(indented_lines, reindent(line, level))
+            end
+        end
 
-    function compile(...)
-      return loadstring(parse(...))()
+        if config.initial_indentation_depth > 0 then
+            local initial_indentation = make_spaces(config.initial_indentation_depth)
+            for i=1,#indented_lines do
+                indented_lines[i] = initial_indentation .. indented_lines[i]
+            end
+        end
+
+        return table.concat(indented_lines, "\n")
     end
 
     local function apply_template(string_template, data)
