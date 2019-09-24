@@ -3,67 +3,40 @@ local function new_template(config)
     local template_level = 0
 
     config = config or {}
-
     config.initial_indentation_depth = config.initial_indentation_depth or 0
-    local indent_spaces = config.indent or "  "
 
-    local indent_functions = {}
-    local saved_indents = {}
-    function indent_functions.indent()
-        local saved_indent = saved_indents[indentation_depth]
-        if saved_indent then return saved_indent end
-
-        local indents = {}
-        for i=1, indentation_depth do
-            table.insert(indents, indent_spaces)
-        end
-        local indentation = table.concat(indents, "")
-        saved_indents[indentation_depth] = indentation
-        return indentation
-    end
-
-    function indent_functions.inc_indent(indents)
-        indentation_depth = indentation_depth + #indents
-        return ""
-    end
-
-    function indent_functions.dec_indent(indents)
-        indentation_depth = indentation_depth - #indents
-        return ""
-    end
-
-    local function parse(data, operation)
+    local function parse(text, operation)
       local str = 
         "return function(_)" .. 
-          "_[=[" ..  operation(data) ..  "]=] " ..
+          "_[=[" ..  operation(text) ..  "]=] " ..
         "end"
-      print("----------------------------")
-      print(str)
-      print("----------------------------")
+--      print("----------------------------")
+--      print(str)
+--      print("----------------------------")
       return str
     end
 
-    local function compile(...)
-      return loadstring(parse(...))()
+    local function compile(text, operation)
+      return loadstring(parse(text, operation))()
     end
 
-    local function render(data, args)
+    local function render(text, args)
       local return_str = ""
       local function string_cat(x)
           return_str = return_str .. x
       end
 
-      local function exec(data)
-        if type(data) == "function" then
+      local function exec(text)
+        if type(text) == "function" then
           local args = args or {}
           setmetatable(args, { __index = _G })
-          setfenv(data, args)
-          data(exec)
+          setfenv(text, args)
+          text(exec)
         else
-          string_cat(tostring(data or ''))
+          string_cat(tostring(text or ''))
         end
       end
-      exec(data)
+      exec(text)
       return return_str
     end
 
@@ -72,25 +45,17 @@ local function new_template(config)
         return s:gmatch("(.-)\n")
     end
 
-    local function code_substitution(data)
-        return data:
+    local function code_substitution(text)
+        return text:
             gsub("[][]=[][]", ']=]_"%1"_[=['):
+            gsub("<%|%%", "<|\n]=]_("):
+            gsub("%%%|>", ")_[=[\n\n|>"):
             gsub("<%%", "]=]_("):
-            gsub("%%>", ")_[=["):
-            gsub("<%[%?", "<@\n]=] "):
---            gsub("%s*<%]%?", "\n]=]\nHERE\n"):
-            gsub("%s*<%?([^%?]*)%?%]>", "\n]=] %1 _[=[\n@>"):
---            gsub("%?%|>", " _[=["):
+            gsub("%%>", ")_[=[\n"):
+            gsub("<%|%?", "<@\n]=] "):
+            gsub("%s*<%?([^%?]*)%?%|>", "\n]=] %1 _[=[\n@>"):
             gsub("<%?", "]=] "):
-            gsub("%?>", " _[=["):
-            gsub("<%|", "<|\n]=]_("):
-            gsub("%|>", ")_[=[\n\n|>")
-
---            gsub("[][]=[][]", ']=]_"%1"_[=['):
---            gsub("<%%", "]=]_("):
---            gsub("%%>", ")_[=[\n"):
---            gsub("<%?", "]=] "):
---            gsub("%?>", " _[=[")
+            gsub("%?>", " _[=[")
     end
 
     local function make_spaces(count)
@@ -115,13 +80,11 @@ local function new_template(config)
         offset = false
     }
 
-    local function code_indentation(data)
+    local function code_indentation(text)
         local indented_lines = {}
 
-        for line in each_line(data) do
-            print("line:[" .. line .. "] offset: " .. (level.offset or "NA"))
+        for line in each_line(text) do
             local indentation_spaces = line:match("^(%s*)<%|") 
---                                        or line:match("^(%s*)<@")
             if indentation_spaces then
                 local new_level = {
                     depth = #indentation_spaces - (level.offset or 0),
@@ -133,11 +96,11 @@ local function new_template(config)
                 level = new_level
             elseif line:match("%|>") then
                 level = level.prev
+                assert(level)
             elseif line:match("^(%s*)<@") then
                 local indentation_spaces = line:match("^(%s*)<@") 
                 local new_level = {
                     depth = #indentation_spaces - (level.offset or 0),
---                    depth = #indentation_spaces,
                     offset = false,
                     spaces_to_add = false,
                     spaces_to_remove = false,
@@ -146,10 +109,10 @@ local function new_template(config)
                 level = new_level
             elseif line:match("@>") then
                 level = level.prev
+                assert(level)
             else
                 if not level.spaces_to_add and not level.spaces_to_remove then
                     local spaces = line:match("^(%s*)(.*)$")
-                    print("spaces: [" .. spaces .. "]")
                     if spaces and #spaces > level.depth then
                         level.offset = #spaces - level.depth
                         level.spaces_to_remove = make_spaces(level.offset)
@@ -174,10 +137,6 @@ local function new_template(config)
 
     local function apply_template(string_template, data)
         template_level = template_level + 1
-        if template_level == 1 then
-            indentation_depth = config.initial_indentation_depth or 0
-            indent_spaces = config.indent or "  "
-        end
 
         local code_template_fn = compile(string_template, code_substitution)
         local res = render(code_template_fn, data)
